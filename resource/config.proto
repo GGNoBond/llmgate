@@ -1,0 +1,17 @@
+syntax = "proto3";
+option go_package = "github.com/aoxin/llmgate/learningtest/pb;pb"; // ./输出目录；pb是go包名
+
+message ServerConfig {
+  int32 Port = 1;
+  string Name = 2;
+}
+message LoggerConfig {
+  int32 LogLevel = 1;
+  repeated string LogOutput = 2;
+  string LogDir = 3;
+}
+
+message Config {
+  ServerConfig Server = 1;
+  LoggerConfig Logger = 2;
+}

@@ -1,0 +1,51 @@
+server:
+  addr: ":8080"
+  read_timeout: 30s
+  write_timeout: 120s
+
+transport:
+  max_idle_conns: 200
+  max_idle_conns_per_host: 100
+  idle_conn_timeout: 90s
+  dial_context_timeout: 5s
+  tls_handshake_timeout: 5s
+  response_header_timeout: 60s
+
+upstreams:
+  - name: ollama-native
+    type: ollama
+    base_url: http://localhost:11434/
+    models: ["qwen2.5:0.5b", "qwen2.5:1.5b"]
+    per_response_timeout: 5m
+    stream_chunk_timeout: 10s
+
+  - name: deepseek-native
+    type: openai
+    base_url: http://localhost:11434/v1
+    models: ["deepseek-coder:1.3b"]
+    per_response_timeout: 5m
+    stream_chunk_timeout: 10s
+
+  - name: deepseek-remote
+    type: openai
+    base_url: https://api.deepseek.com/v1
+    api_key: "sk-7eeba65b6a3044f7ba50cba3e08cbf84"
+    models: ["deepseek-chat"]
+    per_response_timeout: 5m
+    stream_chunk_timeout: 10s
+
+  - name: mock  # 模拟上游服务
+    type: ollama
+    base_url: http://localhost:9999/
+    stream_chunk_timeout: 20s   # 第4个chunk会等15s，触发超时
+    models: [ "mock-model" ]
+
+logger:
+  level: "trace"
+  file_enable: false
+  console_enable: true
+  filename: "./log/llmgate.log"
+  max_size: 100
+  max_backups: 10
+  max_age: 7
+  compress: true
