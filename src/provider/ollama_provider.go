@@ -5,10 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 	"time"
 
 	"github.com/aoxin/llmgate/src/config"
@@ -23,6 +23,10 @@ type OllamaProvider struct {
 	streamChunkTimeout time.Duration
 	client             *http.Client
 	streamClient       *http.Client
+}
+
+func (p *OllamaProvider) BaseURL() string {
+	return p.baseURL
 }
 
 func NewOllamaProvider(upstreamCfg *config.UpstreamConfig, tr *http.Transport) *OllamaProvider {
@@ -72,7 +76,6 @@ type (
 )
 
 func (p *OllamaProvider) Chat(ctx context.Context, req *openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
-	lgr := logger.Get()
 	or := ollamaRequest{
 		Model:    req.Model,
 		Messages: req.Messages,
@@ -90,30 +93,20 @@ func (p *OllamaProvider) Chat(ctx context.Context, req *openai.ChatCompletionReq
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	{
-		// dump request
-		reqDump, err := httputil.DumpRequest(httpReq, true)
-		if err != nil {
-			return nil, err
-		}
-		lgr.Trace().Msgf("build httpReq:\n%s", reqDump)
-	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	{
-		// dump response
-		respDump, err := httputil.DumpResponse(resp, true)
-		if err != nil {
+		if ctx.Err() != nil {
 			return nil, err
 		}
-		lgr.Trace().Msgf("Response:\n%s", respDump)
+		return nil, &UpstreamError{Err: err, StatusCode: 0}
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("response status code: %d, status: %s", resp.StatusCode, resp.Status)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &UpstreamError{
+			Err:        fmt.Errorf("upstream error: %s", resp.Status),
+			StatusCode: resp.StatusCode,
+		}
 	}
 	data, _ := io.ReadAll(resp.Body)
 	var ollamaResp ollamaResponse
@@ -162,16 +155,25 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 
 	resp, err := p.streamClient.Do(httpReq)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		return &UpstreamError{Err: err, StatusCode: 0}
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &UpstreamError{
+			Err:        fmt.Errorf("upstream error: %s", resp.Status),
+			StatusCode: resp.StatusCode,
+		}
+	}
 	id := fmt.Sprintf("chatcmpl-%d", time.Now().Unix())
 	first := true
 
 	// 类似于 openai_provider.go 的实现
 	lines := make(chan []byte)
-	errCh := make(chan error)
+	errCh := make(chan error, 1)
 
 	go func() {
 		scanner := bufio.NewScanner(resp.Body)
@@ -194,6 +196,7 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 	for {
 		select {
 		case line := <-lines:
+			sseTimer.Reset(sseTimeout)
 			if len(line) == 0 {
 				continue
 			}
@@ -228,10 +231,10 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 				return err
 			}
 			if or.Done {
-				break
+				return nil
 			}
 		case <-sseTimer.C:
-			return fmt.Errorf("SSE chunk timeout")
+			return errors.New("SSE chunk timeout")
 		case err := <-errCh:
 			return err
 		case <-ctx.Done():

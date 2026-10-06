@@ -1,7 +1,7 @@
 server:
   addr: ":8080"
   read_timeout: 30s
-  write_timeout: 120s
+#  write_timeout: 120s
 
 transport:
   max_idle_conns: 200
@@ -12,33 +12,51 @@ transport:
   response_header_timeout: 60s
 
 upstreams:
-  - name: ollama-native
+  - name: ollama-native-a
     type: ollama
     base_url: http://localhost:11434/
-    models: ["qwen2.5:0.5b", "qwen2.5:1.5b"]
+    models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
     per_response_timeout: 5m
     stream_chunk_timeout: 10s
+    weight: 3
+    health:
+      {
+        path: /api/tags,
+        interval: 5s,
+        timeout: 2s,
+        fail_threshold: 3,
+        ok_threshold: 2
+      }
 
-  - name: deepseek-native
+  - name: ollama-native-b
     type: openai
-    base_url: http://localhost:11434/v1
-    models: ["deepseek-coder:1.3b"]
-    per_response_timeout: 5m
+    base_url: http://localhost:11435/v1
+    models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
+    per_response_timeout: 5s
     stream_chunk_timeout: 10s
+    weight: 1
+    health:
+      {
+        path: /models,
+        interval: 5m,
+        timeout: 2s,
+        fail_threshold: 3,
+        ok_threshold: 2
+      }
 
-  - name: deepseek-remote
-    type: openai
-    base_url: https://api.deepseek.com/v1
-    api_key: "sk-7eeba65b6a3044f7ba50cba3e08cbf84"
-    models: ["deepseek-chat"]
-    per_response_timeout: 5m
-    stream_chunk_timeout: 10s
+#  - name: deepseek-remote
+#    type: openai
+#    base_url: https://api.deepseek.com/v1
+#    api_key: "sk-7eeba65b6a3044f7ba50cba3e08cbf84"
+#    models: ["deepseek-chat"]
+#    per_response_timeout: 5m
+#    stream_chunk_timeout: 10s
 
-  - name: mock  # 模拟上游服务
-    type: ollama
-    base_url: http://localhost:9999/
-    stream_chunk_timeout: 20s   # 第4个chunk会等15s，触发超时
-    models: [ "mock-model" ]
+#  - name: mock  # 模拟上游服务
+#    type: ollama
+#    base_url: http://localhost:9999/
+#    stream_chunk_timeout: 20s   # 第4个chunk会等15s，触发超时
+#    models: [ "mock-model" ]
 
 logger:
   level: "trace"

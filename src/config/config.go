@@ -34,6 +34,16 @@ type UpstreamConfig struct {
 	Models             []string      `mapstructure:"models"`
 	PerResponseTimeout time.Duration `mapstructure:"per_response_timeout"` // 单个请求超时时间
 	StreamChunkTimeout time.Duration `mapstructure:"stream_chunk_timeout"` // chunk最大间隔时间
+	Weight             int           `mapstructure:"weight"`               // 实例权重
+	Health             HealthConfig  `mapstructure:"health"`               // 健康检查配置
+}
+
+type HealthConfig struct {
+	Path          string        `mapstructure:"path"`
+	Interval      time.Duration `mapstructure:"interval"`       // checker探测间隔
+	Timeout       time.Duration `mapstructure:"timeout"`        // checker探测超时时间
+	FailThreshold int64         `mapstructure:"fail_threshold"` // 连续失败n次后标记为 unhealthy
+	OkThreshold   int64         `mapstructure:"ok_threshold"`   // 连续成功n次后标记为 healthy
 }
 type LoggerConfig struct {
 	Level         string `mapstructure:"level"`
@@ -48,7 +58,7 @@ type LoggerConfig struct {
 type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
 	Transport TransportConfig  `mapstructure:"transport"`
-	Upstream  []UpstreamConfig `mapstructure:"upstreams"`
+	Upstreams []UpstreamConfig `mapstructure:"upstreams"`
 	Logger    LoggerConfig     `mapstructure:"logger"`
 }
 
@@ -74,6 +84,35 @@ func GetConfig(path string) *Config {
 		if err := viper.Unmarshal(inst); err != nil {
 			panic(fmt.Sprintf("Failed to unmarshal config: %v", err))
 		}
+		inst.applyDefaults()
 	})
 	return inst
+}
+
+// 部分配置的合法校验及默认值
+func (c *Config) applyDefaults() {
+	for i := range c.Upstreams {
+		u := &c.Upstreams[i]
+		if u.PerResponseTimeout <= 0 {
+			u.PerResponseTimeout = 5 * time.Minute // 设置默认值为5分钟
+		}
+		if u.StreamChunkTimeout <= 0 {
+			u.StreamChunkTimeout = 10 * time.Second
+		}
+		if u.Weight <= 0 {
+			u.Weight = 1
+		}
+		if u.Health.Interval <= 0 {
+			u.Health.Interval = 5 * time.Second
+		}
+		if u.Health.Timeout <= 0 {
+			u.Health.Timeout = 2 * time.Second
+		}
+		if u.Health.FailThreshold <= 0 {
+			u.Health.FailThreshold = 3
+		}
+		if u.Health.OkThreshold <= 0 {
+			u.Health.OkThreshold = 3
+		}
+	}
 }

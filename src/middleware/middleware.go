@@ -23,7 +23,7 @@ func Recovery() MiddleWare {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					logger.Get().Panic().Msgf("panic recovered: %v", err)
+					logger.Get().Error().Msgf("panic recovered: %v", err)
 					http.Error(w, `{"error": "Internal Server Error"}`, http.StatusInternalServerError)
 				}
 			}()

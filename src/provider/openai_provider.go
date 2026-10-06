@@ -5,10 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 	"strings"
 	"time"
 
@@ -24,6 +24,10 @@ type OpenAIProvider struct {
 	streamChunkTimeout time.Duration
 	client             *http.Client
 	streamClient       *http.Client
+}
+
+func (p *OpenAIProvider) BaseURL() string {
+	return p.baseURL
 }
 
 func NewOpenAIProvider(upstreamCfg *config.UpstreamConfig, tr *http.Transport) *OpenAIProvider {
@@ -57,30 +61,21 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *openai.ChatCompletionReq
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
-	{
-		// dump request
-		reqDump, err := httputil.DumpRequest(httpReq, true)
-		if err != nil {
-			return nil, err
-		}
-		logger.Get().Trace().Msgf("build httpReq:\n%s", reqDump)
-	}
+
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	{
-		// dump response
-		respDump, err := httputil.DumpResponse(resp, true)
-		if err != nil {
+		if ctx.Err() != nil {
 			return nil, err
 		}
-		logger.Get().Trace().Msgf("Response:\n%s", respDump)
+		return nil, &UpstreamError{Err: err, StatusCode: 0}
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("response status code: %d, status: %s", resp.StatusCode, resp.Status)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &UpstreamError{
+			Err:        fmt.Errorf("upstream error: %s", resp.Status),
+			StatusCode: resp.StatusCode,
+		}
 	}
 
 	data, _ := io.ReadAll(resp.Body)
@@ -105,9 +100,18 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 
 	resp, err := p.streamClient.Do(httpReq)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		return &UpstreamError{Err: err, StatusCode: 0}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &UpstreamError{
+			Err:        fmt.Errorf("upstream error: %s", resp.Status),
+			StatusCode: resp.StatusCode,
+		}
+	}
 
 	// 用streamChunkTimeout 来控制每个chunk的超时
 	// 起单独goroutine负责resp.Body上的阻塞读
@@ -144,7 +148,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 			}
 			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if payload == "[DONE]" {
-				break
+				return nil
 			}
 			var chunk openai.ChatCompletionChunk
 			if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
@@ -156,7 +160,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 				return err
 			}
 		case <-sseChunkTimer.C:
-			return fmt.Errorf("SSE chunk timeout")
+			return errors.New("SSE chunk timeout")
 		case err := <-errCh:
 			return err
 		case <-ctx.Done():
