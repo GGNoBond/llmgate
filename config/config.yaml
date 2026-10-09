@@ -12,27 +12,27 @@ transport:
   response_header_timeout: 60s
 
 upstreams:
-  - name: ollama-native-a
-    type: ollama
-    base_url: http://localhost:11434/
-    models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
-    per_response_timeout: 5m
-    stream_chunk_timeout: 10s
-    weight: 3
-    health:
-      {
-        path: /api/tags,
-        interval: 5s,
-        timeout: 2s,
-        fail_threshold: 3,
-        ok_threshold: 2
-      }
+#  - name: ollama-native-a
+#    type: ollama
+#    base_url: http://localhost:11434
+#    models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
+#    per_response_timeout: 5m
+#    stream_chunk_timeout: 10s
+#    weight: 3
+#    health:
+#      {
+#        path: /api/tags,
+#        interval: 5s,
+#        timeout: 2s,
+#        fail_threshold: 3,
+#        ok_threshold: 2
+#      }
 
   - name: ollama-native-b
     type: openai
     base_url: http://localhost:11435/v1
     models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
-    per_response_timeout: 5s
+    per_response_timeout: 5m
     stream_chunk_timeout: 10s
     weight: 1
     health:
@@ -43,11 +43,16 @@ upstreams:
         fail_threshold: 3,
         ok_threshold: 2
       }
+    key_pool:
+      - "sk-upstream-b-key-01"
+      - "sk-upstream-b-key-02"
+      - "sk-upstream-b-key-03"
+      - "sk-upstream-b-key-04"
+      - "sk-upstream-b-key-05"
 
 #  - name: deepseek-remote
 #    type: openai
 #    base_url: https://api.deepseek.com/v1
-#    api_key: "sk-7eeba65b6a3044f7ba50cba3e08cbf84"
 #    models: ["deepseek-chat"]
 #    per_response_timeout: 5m
 #    stream_chunk_timeout: 10s
@@ -57,6 +62,21 @@ upstreams:
 #    base_url: http://localhost:9999/
 #    stream_chunk_timeout: 20s   # 第4个chunk会等15s，触发超时
 #    models: [ "mock-model" ]
+
+
+tenants:
+  - id: t1
+    name: zhang-san
+    api_key: sk-llmgate-zhangsan-key
+    allowed_models: [qwen2.5:1.5b, deepseek-coder:1.3b]
+    rate_limit_rpm: 20
+    balance: 10000
+  - id: t2
+    name: li-si
+    api_key: sk-llmgate-lisi-key
+    allowed_models: [deepseek-coder:1.3b]
+    rate_limit_rpm: 20
+    balance: 1000
 
 logger:
   level: "trace"

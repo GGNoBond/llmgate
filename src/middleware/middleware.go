@@ -9,6 +9,10 @@ import (
 
 type MiddleWare func(http.Handler) http.Handler
 
+type (
+	CtxAuthKey struct{}
+)
+
 // Chain 将多个中间件串联起来
 func Chain(h http.Handler, mws ...MiddleWare) http.Handler {
 	for _, mw := range slices.Backward(mws) {

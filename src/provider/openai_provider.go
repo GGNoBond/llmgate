@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoxin/llmgate/src/config"
+	"github.com/aoxin/llmgate/src/keypool"
 	"github.com/aoxin/llmgate/src/logger"
 	"github.com/aoxin/llmgate/src/openai"
 )
@@ -20,7 +21,7 @@ import (
 type OpenAIProvider struct {
 	name               string
 	baseURL            string
-	apiKey             string
+	pool               *keypool.Pool
 	streamChunkTimeout time.Duration
 	client             *http.Client
 	streamClient       *http.Client
@@ -34,7 +35,7 @@ func NewOpenAIProvider(upstreamCfg *config.UpstreamConfig, tr *http.Transport) *
 	return &OpenAIProvider{
 		name:               upstreamCfg.Name,
 		baseURL:            upstreamCfg.BaseURL,
-		apiKey:             upstreamCfg.APIKey,
+		pool:               keypool.NewPool(upstreamCfg.KeyPool),
 		streamChunkTimeout: upstreamCfg.StreamChunkTimeout,
 		client: &http.Client{
 			Transport: tr,
@@ -53,66 +54,124 @@ func (p *OpenAIProvider) Name() string {
 func (p *OpenAIProvider) Chat(ctx context.Context, req *openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
 	body, _ := json.Marshal(req)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	maxKeyTries := p.pool.Size()
+	if maxKeyTries <= 0 {
+		maxKeyTries = 1
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		if ctx.Err() != nil {
+	var lastErr error
+	for range maxKeyTries {
+		apiKey, ok := p.pool.Next()
+		if !ok {
+			return nil, &UpstreamError{
+				Err:        errors.New("all api keys rate limited"),
+				StatusCode: http.StatusTooManyRequests,
+			}
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
 			return nil, err
 		}
-		return nil, &UpstreamError{Err: err, StatusCode: 0}
-	}
-	defer resp.Body.Close()
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &UpstreamError{
-			Err:        fmt.Errorf("upstream error: %s", resp.Status),
-			StatusCode: resp.StatusCode,
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			return nil, &UpstreamError{Err: err, StatusCode: 0}
 		}
-	}
+		// 429 key限流, 换key
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := ParseRetryAfter(resp.Header)
+			p.pool.MarkRateLimited(apiKey, retryAfter)
+			resp.Body.Close()
+			lastErr = &UpstreamError{
+				Err:        errors.New("upstream error: too many requests"),
+				StatusCode: resp.StatusCode,
+				RetryAfter: retryAfter,
+			}
+			logger.Get().Warn().Msgf("[%s] key %s 429, cooling down for %v", p.name, apiKey, retryAfter)
+			continue
+		}
 
-	data, _ := io.ReadAll(resp.Body)
-	var out openai.ChatCompletionResponse
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, &UpstreamError{
+				Err:        fmt.Errorf("upstream error: %s", resp.Status),
+				StatusCode: resp.StatusCode,
+			}
+		}
+
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var out openai.ChatCompletionResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+
 	}
-	return &out, nil
+	return nil, lastErr
 }
 
 func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatCompletionRequest, h StreamHandler) error {
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
 
-	resp, err := p.streamClient.Do(httpReq)
-	if err != nil {
-		if ctx.Err() != nil {
+	maxKeyTries := p.pool.Size()
+	if maxKeyTries <= 0 {
+		maxKeyTries = 1
+	}
+	var resp *http.Response
+	var lastErr error
+	for range maxKeyTries {
+		apiKey, ok := p.pool.Next()
+		if !ok {
+			return &UpstreamError{
+				Err:        errors.New("all api keys rate limited"),
+				StatusCode: http.StatusTooManyRequests,
+			}
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
 			return err
 		}
-		return &UpstreamError{Err: err, StatusCode: 0}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+		r, err := p.streamClient.Do(httpReq)
+		if err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			return &UpstreamError{Err: err, StatusCode: 0}
+		}
+		if r.StatusCode == http.StatusTooManyRequests {
+			retryAfter := ParseRetryAfter(r.Header)
+			p.pool.MarkRateLimited(apiKey, retryAfter)
+			r.Body.Close()
+			lastErr = &UpstreamError{
+				Err:        errors.New("upstream error: too many requests"),
+				StatusCode: r.StatusCode,
+				RetryAfter: retryAfter,
+			}
+			logger.Get().Warn().Msgf("[%s] key %s 429, cooling down for %v", p.name, apiKey, retryAfter)
+			continue
+		}
+		if r.StatusCode < 200 || r.StatusCode >= 300 {
+			return &UpstreamError{
+				Err:        fmt.Errorf("upstream error: %s", r.Status),
+				StatusCode: r.StatusCode,
+			}
+		}
+		resp = r
+		break
+	}
+	if resp == nil {
+		return lastErr
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &UpstreamError{
-			Err:        fmt.Errorf("upstream error: %s", resp.Status),
-			StatusCode: resp.StatusCode,
-		}
-	}
-
 	// 用streamChunkTimeout 来控制每个chunk的超时
 	// 起单独goroutine负责resp.Body上的阻塞读
 	// lines传递读到的行，errCh传递scanner错误码

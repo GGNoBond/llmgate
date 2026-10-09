@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/aoxin/llmgate/src/openai"
 )
@@ -19,6 +22,7 @@ type Provider interface {
 // UpstreamError 打包http响应码和错误，用于判断是否是实例错误
 type UpstreamError struct {
 	StatusCode int
+	RetryAfter time.Duration
 	Err        error
 }
 
@@ -43,3 +47,29 @@ func IsInstanceErr(err error) (bool, int) {
 }
 
 type StreamHandler func(chunk *openai.ChatCompletionChunk) error
+
+func ParseRetryAfter(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		return 0
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+func IsRateLimit(err error) (*UpstreamError, bool) {
+	var ue *UpstreamError
+	if errors.As(err, &ue) && ue.StatusCode == http.StatusTooManyRequests {
+		return ue, true
+	}
+	return nil, false
+}

@@ -36,6 +36,7 @@ type UpstreamConfig struct {
 	StreamChunkTimeout time.Duration `mapstructure:"stream_chunk_timeout"` // chunk最大间隔时间
 	Weight             int           `mapstructure:"weight"`               // 实例权重
 	Health             HealthConfig  `mapstructure:"health"`               // 健康检查配置
+	KeyPool            []string      `mapstructure:"key_pool"`             // api key 码池
 }
 
 type HealthConfig struct {
@@ -44,6 +45,14 @@ type HealthConfig struct {
 	Timeout       time.Duration `mapstructure:"timeout"`        // checker探测超时时间
 	FailThreshold int64         `mapstructure:"fail_threshold"` // 连续失败n次后标记为 unhealthy
 	OkThreshold   int64         `mapstructure:"ok_threshold"`   // 连续成功n次后标记为 healthy
+}
+type TenantConfig struct {
+	ID            string   `mapstructure:"id"`
+	Name          string   `mapstructure:"name"`
+	APIKey        string   `mapstructure:"api_key"`
+	AllowedModels []string `mapstructure:"allowed_models"`
+	RateLimitRPM  int      `mapstructure:"rate_limit_rpm"`
+	Balance       int64    `mapstructure:"balance"`
 }
 type LoggerConfig struct {
 	Level         string `mapstructure:"level"`
@@ -59,6 +68,7 @@ type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
 	Transport TransportConfig  `mapstructure:"transport"`
 	Upstreams []UpstreamConfig `mapstructure:"upstreams"`
+	Tenants   []TenantConfig   `mapstructure:"tenants"`
 	Logger    LoggerConfig     `mapstructure:"logger"`
 }
 

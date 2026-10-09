@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aoxin/llmgate/src/auth"
 	"github.com/aoxin/llmgate/src/config"
 	"github.com/aoxin/llmgate/src/gateway"
 	"github.com/aoxin/llmgate/src/health"
@@ -22,15 +23,18 @@ func main() {
 	logger.Init(&cfg.Logger)
 	lgr := logger.Get()
 	tr := gateway.NewTransport(&cfg.Transport)
-	// bl := &lb.WeightedRR{}
-	bl := &lb.LeastConn{}
-	r, nodeList := router.BuildRouter(cfg.Upstreams, tr, bl)
+	// lb := &lb.WeightedRR{}
+	lb := &lb.LeastConn{}
+	st := auth.NewStore()
+	st.InitStore(cfg.Tenants)
+	r, nodeList := router.BuildRouter(cfg.Upstreams, tr, lb)
 	gw := &gateway.Gateway{Router: r}
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/chat/completions", middleware.Chain(
 		http.HandlerFunc(gw.HandleChatCompletion),
 		middleware.Recovery(),
+		auth.Auth(st),
 	))
 
 	server := http.Server{

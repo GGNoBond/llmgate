@@ -1,117 +1,82 @@
-// learningtest/mockstream/mockSSEserver.go
-// 模拟 Ollama /api/chat 流式接口（NDJSON 格式），用于测试上游 chunk 间隔超时
+// learningtest/mock429/mock429server.go
+// 模拟 OpenAI 兼容上游：对指定 api key 返回 429 + Retry-After，验证 llmgate 限流/熔断/换 key 链路
 package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
-// ollamaMessage 对应 ollama 响应中的 message 字段
-type ollamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// ollamaStreamChunk 对应 ollama /api/chat 流式返回的单行 JSON
-type ollamaStreamChunk struct {
-	Model           string        `json:"model"`
-	CreatedAt       time.Time     `json:"created_at"`
-	Message         ollamaMessage `json:"message"`
-	Done            bool          `json:"done"`
-	DoneReason      string        `json:"done_reason,omitempty"`
-	PromptEvalCount *int          `json:"prompt_eval_count,omitempty"`
-	EvalCount       *int          `json:"eval_count,omitempty"`
-}
-
-func writeChunk(w http.ResponseWriter, flusher http.Flusher, c ollamaStreamChunk) {
-	data, _ := json.Marshal(c)
-	// NDJSON：每行一个 JSON 对象，以 \n 分隔
-	fmt.Fprintf(w, "%s\n", data)
-	flusher.Flush()
-}
-
 func main() {
-	http.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {
-		flusher := w.(http.Flusher)
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-
-		model := "mock-ollama"
-		now := time.Now()
-
-		// 逐字返回内容，前3个正常速度，第4个模拟上游卡死
-		chunks := []string{"你", "好", "，", "世", "界", "！"}
-		for i, c := range chunks {
-			delay := 500 * time.Millisecond
-			if i == 3 {
-				delay = 15 * time.Second // 模拟上游卡死，触发 idle timeout
+	limited := strings.Split(os.Getenv("LIMITED_KEYS"), ",")
+	retryAfter := os.Getenv("RETRY_AFTER")
+	if retryAfter == "" {
+		retryAfter = "20"
+	}
+	isLimited := func(key string) bool {
+		for _, k := range limited {
+			k = strings.TrimSpace(k)
+			if k == "*" || (k != "" && strings.Contains(key, k)) {
+				return true
 			}
-			time.Sleep(delay)
+		}
+		return false
+	}
 
-			writeChunk(w, flusher, ollamaStreamChunk{
-				Model:     model,
-				CreatedAt: now,
-				Message:   ollamaMessage{Role: "assistant", Content: c},
-				Done:      false,
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		var req struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		if isLimited(key) {
+			fmt.Printf("[429 ] key=%s stream=%v\n", key, req.Stream)
+			w.Header().Set("Retry-After", retryAfter)
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{"message": "Rate limit reached for this api key", "type": "rate_limit_error"},
 			})
+			return
 		}
 
-		// 最后一条：done=true，带 usage 统计
-		promptEval, evalCount := 5, len(chunks)
-		writeChunk(w, flusher, ollamaStreamChunk{
-			Model:           model,
-			CreatedAt:       now,
-			Message:         ollamaMessage{Role: "assistant", Content: ""},
-			Done:            true,
-			DoneReason:      "stop",
-			PromptEvalCount: &promptEval,
-			EvalCount:       &evalCount,
+		fmt.Printf("[200 ] key=%s stream=%v\n", key, req.Stream)
+		if req.Stream {
+			flusher := w.(http.Flusher)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			for _, c := range []string{"你", "好", "，", "我", "是", "mock"} {
+				data, _ := json.Marshal(map[string]any{
+					"id": "chatcmpl-mock429", "object": "chat.completion.chunk",
+					"created": time.Now().Unix(), "model": req.Model,
+					"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": c}}},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+				time.Sleep(100 * time.Millisecond)
+			}
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-mock429", "object": "chat.completion",
+			"created": time.Now().Unix(), "model": req.Model,
+			"choices": []any{map[string]any{"index": 0,
+				"message":       map[string]string{"role": "assistant", "content": "mock ok, this key is not rate limited"},
+				"finish_reason": "stop"}},
+			"usage": map[string]int{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
 		})
 	})
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	fmt.Println("Mock Ollama stream server on :9999")
-	http.ListenAndServe(":9999", nil)
+	fmt.Printf("Mock 429 upstream on :11435 (LIMITED_KEYS=%q, RETRY_AFTER=%s)\n", os.Getenv("LIMITED_KEYS"), retryAfter)
+	http.ListenAndServe(":11435", mux)
 }
-
-/* 模拟openai
-// learningtest/mockstream/mockSSEserver.go
-package main
-
-import (
-	"fmt"
-	"net/http"
-	"time"
-)
-
-func main() {
-	http.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		flusher := w.(http.Flusher)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-
-		chunks := []string{"你", "好", "，", "世", "界", "！"}
-		for i, c := range chunks {
-			// 前3个chunk正常速度，第4个开始模拟卡顿
-			delay := 500 * time.Millisecond
-			if i == 3 {
-				delay = 15 * time.Second // 模拟上游卡死
-			}
-			time.Sleep(delay)
-
-			fmt.Fprintf(w, `data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"%s"},"finish_reason":null}]}`+"\n\n", c)
-			flusher.Flush()
-		}
-		fmt.Fprintf(w, `data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
-	})
-
-	fmt.Println("Mock stream server on :9999")
-	http.ListenAndServe(":9999", nil)
-}
-
-*/

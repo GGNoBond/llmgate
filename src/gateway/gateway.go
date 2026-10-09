@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/aoxin/llmgate/src/auth"
 	"github.com/aoxin/llmgate/src/config"
 	"github.com/aoxin/llmgate/src/logger"
+	"github.com/aoxin/llmgate/src/middleware"
 	"github.com/aoxin/llmgate/src/openai"
 	"github.com/aoxin/llmgate/src/provider"
 	"github.com/aoxin/llmgate/src/router"
@@ -34,11 +37,35 @@ func NewTransport(cfg *config.TransportConfig) *http.Transport {
 	}
 }
 
+func writeFinalErr(w http.ResponseWriter, lastErr error) {
+	if lastErr == nil {
+		utils.WriteJSONErr(w, http.StatusServiceUnavailable, "no available upstream")
+		return
+	}
+	if ue, ok := provider.IsRateLimit(lastErr); ok {
+		if ue.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(ue.RetryAfter.Seconds())))
+		}
+		utils.WriteJSONErr(w, http.StatusTooManyRequests, "upstream rate limited: "+lastErr.Error())
+		return
+	}
+	utils.WriteJSONErr(w, http.StatusBadGateway, "all upstream failed: "+lastErr.Error())
+
+}
 func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	var req openai.ChatCompletionRequest
 	// Parse request body
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteJSONErr(w, http.StatusBadRequest, "Invalid Body:"+err.Error())
+		return
+	}
+	tenant, ok := r.Context().Value(middleware.CtxAuthKey{}).(*auth.Tenant)
+	if !ok || tenant == nil {
+		utils.WriteJSONErr(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	if !tenant.ModelAllowed(req.Model) {
+		utils.WriteJSONErr(w, http.StatusForbidden, "Model not allowed")
 		return
 	}
 	// SSE support
@@ -51,17 +78,14 @@ func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) 
 	var lastErr error
 	tried := map[string]bool{}
 	for range maxRetry {
-		node, err := gw.Router.Pick(req.Model)
+		node, err := gw.Router.Pick(req.Model, tried)
 		if err != nil {
-			if lastErr != nil {
-				utils.WriteJSONErr(w, http.StatusBadGateway, "all upstream failed: "+lastErr.Error())
-			} else {
+			if lastErr == nil {
 				utils.WriteJSONErr(w, http.StatusServiceUnavailable, err.Error())
+				return
 			}
+			writeFinalErr(w, lastErr)
 			return
-		}
-		if tried[node.Backend.ID] {
-			continue
 		}
 		tried[node.Backend.ID] = true
 		start := time.Now()
@@ -72,9 +96,6 @@ func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			isInstErr, statusCode := provider.IsInstanceErr(err)
 			logger.Get().Trace().Msgf("isInstErr: %v, statusCode: %v", isInstErr, statusCode)
-			// TODO: 如果statusCode=429, 要根据其含义做处理"
-			//  1. api_key限流：需要key冷却，更换key
-			//  2. 实例过载：可以走熔断"
 			if isInstErr {
 				lastErr = err
 				node.CB.OnFailure()
@@ -89,11 +110,7 @@ func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) 
 		utils.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
-	if lastErr != nil {
-		utils.WriteJSONErr(w, http.StatusBadGateway, "all upstream failed: "+lastErr.Error())
-	} else {
-		utils.WriteJSONErr(w, http.StatusServiceUnavailable, "no available upstream")
-	}
+	writeFinalErr(w, lastErr)
 }
 
 func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Request, req *openai.ChatCompletionRequest) {
@@ -104,20 +121,17 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 	}
 
 	maxRetry := 3
-	tried := map[string]bool{}
 	var lastErr error
+	tried := map[string]bool{}
 	for range maxRetry {
-		node, err := gw.Router.Pick(req.Model)
+		node, err := gw.Router.Pick(req.Model, tried)
 		if err != nil {
-			if lastErr != nil {
-				utils.WriteJSONErr(w, http.StatusBadGateway, "all upstream failed: "+lastErr.Error())
-			} else {
+			if lastErr == nil {
 				utils.WriteJSONErr(w, http.StatusServiceUnavailable, err.Error())
+				return
 			}
+			writeFinalErr(w, lastErr)
 			return
-		}
-		if tried[node.Backend.ID] {
-			continue
 		}
 		tried[node.Backend.ID] = true
 		start := time.Now()
@@ -184,9 +198,5 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 		flusher.Flush()
 		return
 	}
-	if lastErr != nil {
-		utils.WriteJSONErr(w, http.StatusBadGateway, "all upstream failed: "+lastErr.Error())
-	} else {
-		utils.WriteJSONErr(w, http.StatusServiceUnavailable, "no available upstream")
-	}
+	writeFinalErr(w, lastErr)
 }

@@ -73,7 +73,7 @@ func (r *Router) Nodes(model string) []*Node {
 	return r.table[model]
 }
 
-func (r *Router) Pick(model string) (*Node, error) {
+func (r *Router) Pick(model string, exclude map[string]bool) (*Node, error) {
 	nodes := r.Nodes(model)
 	if len(nodes) == 0 {
 		return nil, errors.New("no upstream for model: " + model)
@@ -81,6 +81,9 @@ func (r *Router) Pick(model string) (*Node, error) {
 	var candidates []*lb.Backend
 	backendToNode := make(map[string]*Node)
 	for _, node := range nodes {
+		if exclude[node.Backend.ID] { // 本次请求已试过的实例不再参与，避免故障转移重复选中同一节点
+			continue
+		}
 		if node.Backend.Healthy() && node.CB.Allow() {
 			candidates = append(candidates, node.Backend)
 			backendToNode[node.Backend.ID] = node
@@ -88,7 +91,7 @@ func (r *Router) Pick(model string) (*Node, error) {
 	}
 	b := r.balancer.Pick(candidates)
 	if b == nil {
-		return nil, errors.New("all upstreams are unhealthy or circuit-open for model: " + model)
+		return nil, errors.New("all upstreams are unhealthy, circuit-open or already tried for model: " + model)
 	}
 	logger.Get().Trace().Msgf("picked %s for model %s", b.ID, model)
 	return backendToNode[b.ID], nil
