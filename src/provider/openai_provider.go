@@ -116,6 +116,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *openai.ChatCompletionReq
 }
 
 func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatCompletionRequest, h StreamHandler) error {
+	req.StreamOptions.IncludeUsage = true
 	body, _ := json.Marshal(req)
 
 	maxKeyTries := p.pool.Size()

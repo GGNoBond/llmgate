@@ -2,6 +2,7 @@ server:
   addr: ":8080"
   read_timeout: 30s
 #  write_timeout: 120s
+  usage_file: "data/usage.json"
 
 transport:
   max_idle_conns: 200
@@ -12,21 +13,21 @@ transport:
   response_header_timeout: 60s
 
 upstreams:
-#  - name: ollama-native-a
-#    type: ollama
-#    base_url: http://localhost:11434
-#    models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
-#    per_response_timeout: 5m
-#    stream_chunk_timeout: 10s
-#    weight: 3
-#    health:
-#      {
-#        path: /api/tags,
-#        interval: 5s,
-#        timeout: 2s,
-#        fail_threshold: 3,
-#        ok_threshold: 2
-#      }
+  - name: ollama-native-a
+    type: ollama
+    base_url: http://localhost:11434
+    models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
+    per_response_timeout: 5m
+    stream_chunk_timeout: 10s
+    weight: 3
+    health:
+      {
+        path: /api/tags,
+        interval: 5s,
+        timeout: 2s,
+        fail_threshold: 3,
+        ok_threshold: 2
+      }
 
   - name: ollama-native-b
     type: openai
@@ -65,18 +66,20 @@ upstreams:
 
 
 tenants:
-  - id: t1
+  - id: tenant-01
     name: zhang-san
     api_key: sk-llmgate-zhangsan-key
     allowed_models: [qwen2.5:1.5b, deepseek-coder:1.3b]
     rate_limit_rpm: 20
-    balance: 10000
-  - id: t2
+    rate_limit_tpm: 20000
+    balance: 2000000
+  - id: tenant-02
     name: li-si
     api_key: sk-llmgate-lisi-key
     allowed_models: [deepseek-coder:1.3b]
     rate_limit_rpm: 20
-    balance: 1000
+    rate_limit_tpm: 10000
+    balance: 1000000
 
 logger:
   level: "trace"
@@ -87,3 +90,8 @@ logger:
   max_backups: 10
   max_age: 7
   compress: true
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0

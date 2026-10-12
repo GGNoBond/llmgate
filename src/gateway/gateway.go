@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aoxin/llmgate/src/auth"
@@ -16,12 +17,39 @@ import (
 	"github.com/aoxin/llmgate/src/middleware"
 	"github.com/aoxin/llmgate/src/openai"
 	"github.com/aoxin/llmgate/src/provider"
+	"github.com/aoxin/llmgate/src/ratelimit"
 	"github.com/aoxin/llmgate/src/router"
 	"github.com/aoxin/llmgate/src/utils"
 )
 
 type Gateway struct {
-	Router *router.Router
+	Router   *router.Router
+	Limiter  ratelimit.Limiter
+	Recorder *ratelimit.Recorder
+	Store    *auth.Store
+}
+
+func (gw *Gateway) recordErr(tenant *auth.Tenant, req *openai.ChatCompletionRequest, node *router.Node, statusCode int, isStream bool, err error) {
+	if gw.Recorder == nil || tenant == nil {
+		return
+	}
+	errMsg := "unknown"
+	if err != nil {
+		errMsg = err.Error()
+	}
+	upstream := ""
+	if node != nil {
+		upstream = node.Backend.ID
+	}
+	gw.Recorder.Record(ratelimit.UsageRecord{
+		Timestamp:  time.Now(),
+		TenantID:   tenant.ID,
+		Model:      req.Model,
+		Upstream:   upstream,
+		Stream:     isStream,
+		StatusCode: statusCode,
+		Err:        errMsg,
+	})
 }
 
 func NewTransport(cfg *config.TransportConfig) *http.Transport {
@@ -54,7 +82,6 @@ func writeFinalErr(w http.ResponseWriter, lastErr error) {
 }
 func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	var req openai.ChatCompletionRequest
-	// Parse request body
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteJSONErr(w, http.StatusBadRequest, "Invalid Body:"+err.Error())
 		return
@@ -68,7 +95,32 @@ func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) 
 		utils.WriteJSONErr(w, http.StatusForbidden, "Model not allowed")
 		return
 	}
-	// SSE support
+	// 余额检查，RPM、TPM检查
+	if gw.Store.GetBalance(r.Context(), tenant.ID) <= 0 {
+		utils.WriteJSONErr(w, http.StatusPaymentRequired, "Insufficient balance")
+		return
+	}
+	prompt := ratelimit.CountMessages(req.Messages)
+	logger.Get().Debug().Msgf("Received chat completion request: %d", prompt)
+
+	if gw.Limiter != nil {
+		if tenant.RateLimitRPM > 0 {
+			if ok, _ := gw.Limiter.Allow("rl:"+tenant.ID+":rpm",
+				tenant.RateLimitRPM, float64(tenant.RateLimitRPM)/60.0, 1); !ok {
+				utils.WriteJSONErr(w, http.StatusTooManyRequests, "rate limit exceeded (rpm)")
+				return
+			}
+		}
+		if tenant.RateLimitTPM > 0 {
+			if ok, _ := gw.Limiter.Allow("rl:"+tenant.ID+":tpm",
+				tenant.RateLimitTPM, float64(tenant.RateLimitTPM)/60.0, prompt); !ok {
+				utils.WriteJSONErr(w, http.StatusTooManyRequests, "rate limit exceeded (tpm)")
+				return
+			}
+		}
+	}
+
+	// SSE 响应
 	if req.Stream {
 		gw.HandleChatCompletionStream(w, r, &req)
 		return
@@ -106,10 +158,29 @@ func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		node.CB.OnSuccess()
+		gw.Recorder.Record(ratelimit.UsageRecord{
+			Timestamp:    time.Now(),
+			TenantID:     tenant.ID,
+			Model:        req.Model,
+			Upstream:     node.Backend.ID,
+			PromptTokens: resp.Usage.PromptTokens,
+			CompTokens:   resp.Usage.CompletionTokens,
+			TotalTokens:  resp.Usage.TotalTokens,
+			LatencyMs:    time.Since(start).Milliseconds(),
+			Stream:       false,
+			StatusCode:   http.StatusOK,
+		})
+		if gw.Limiter != nil && tenant.RateLimitTPM > 0 {
+			if delta := resp.Usage.TotalTokens - prompt; delta > 0 {
+				gw.Limiter.Deduct("rl:"+tenant.ID+":tpm", tenant.RateLimitTPM, float64(tenant.RateLimitTPM)/60.0, delta)
+			}
+		}
+		gw.Store.DeductBalance(r.Context(), tenant.ID, int64(resp.Usage.TotalTokens))
 		logger.Get().Debug().Msgf("[%s] model=%s time_cost=%v tokens=%d", node.Backend.ID, req.Model, time.Since(start), resp.Usage.TotalTokens)
 		utils.WriteJSON(w, http.StatusOK, resp)
 		return
 	}
+	gw.recordErr(tenant, &req, nil, http.StatusBadGateway, false, lastErr)
 	writeFinalErr(w, lastErr)
 }
 
@@ -117,6 +188,11 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		utils.WriteJSONErr(w, http.StatusInternalServerError, "Streaming unsupported")
+		return
+	}
+	tenant, ok := r.Context().Value(middleware.CtxAuthKey{}).(*auth.Tenant)
+	if !ok || tenant == nil {
+		utils.WriteJSONErr(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
@@ -137,6 +213,8 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 		start := time.Now()
 		var firstTrunk time.Time
 		n := 0
+		var content strings.Builder
+		var upstreamUsage *openai.Usage
 
 		node.Backend.IncInflight()
 		err = node.Provider.ChatStream(r.Context(), req, func(chunk *openai.ChatCompletionChunk) error {
@@ -154,8 +232,16 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 				w.WriteHeader(http.StatusOK)
 			}
 			n++
+			if len(chunk.Choices) > 0 {
+				content.WriteString(chunk.Choices[0].Delta.Content)
+			}
+			if chunk.Usage != nil {
+				upstreamUsage = chunk.Usage
+			}
 			data, _ := json.Marshal(chunk)
-			// logger.Get().Trace().Msgf("[%s] Read chunk: %s", time.Now().Format("15:04:05.000"), chunk.Choices[0].Delta.Content)
+			// if len(chunk.Choices) > 0 {
+			// 	logger.Get().Trace().Msgf("[%s] Read chunk: %s", time.Now().Format("15:04:05.000"), chunk.Choices[0].Delta.Content)
+			// }
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 			return nil
@@ -167,9 +253,39 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 			if n > 0 {
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
+				// token用量落库
+				var pTok, cTok, tTok int
+				if upstreamUsage != nil {
+					pTok, cTok, tTok = upstreamUsage.PromptTokens, upstreamUsage.CompletionTokens, upstreamUsage.TotalTokens
+				} else {
+					pTok = ratelimit.CountMessages(req.Messages)
+					cTok = ratelimit.CountText(content.String())
+					tTok = pTok + cTok
+				}
+				tid := tenant.ID
+				gw.Recorder.Record(ratelimit.UsageRecord{
+					Timestamp:    time.Now(),
+					TenantID:     tid,
+					Model:        req.Model,
+					Upstream:     node.Backend.ID,
+					PromptTokens: pTok,
+					CompTokens:   cTok,
+					TotalTokens:  tTok,
+					LatencyMs:    time.Since(start).Milliseconds(),
+					Stream:       true,
+					StatusCode:   http.StatusOK,
+				})
+				if gw.Limiter != nil && tenant.RateLimitTPM > 0 {
+					if delta := tTok - pTok; delta > 0 {
+						gw.Limiter.Deduct("rl:"+tid+":tpm", tenant.RateLimitTPM, float64(tenant.RateLimitTPM)/60.0, delta)
+					}
+				}
+				gw.Store.DeductBalance(r.Context(), tenant.ID, int64(tTok))
+
 				logger.Get().Debug().Msgf("[%s] model=%s Stream done: %d chunks, TTFT:%v, TT:%v", node.Backend.ID, req.Model, n, firstTrunk.Sub(start), time.Since(start))
 			} else {
 				lastErr = fmt.Errorf("%s empty stream", node.Backend.ID)
+				gw.recordErr(tenant, req, node, http.StatusBadGateway, true, lastErr)
 				utils.WriteJSONErr(w, http.StatusBadGateway, "all upstream failed: "+lastErr.Error())
 			}
 			return
@@ -177,6 +293,7 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 
 		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 			logger.Get().Trace().Msgf("[%s] Context canceled", node.Backend.ID)
+			gw.recordErr(tenant, req, node, http.StatusTooManyRequests, true, err)
 			return
 		}
 
@@ -190,13 +307,16 @@ func (gw *Gateway) HandleChatCompletionStream(w http.ResponseWriter, r *http.Req
 				continue
 			}
 			utils.WriteJSONErr(w, statusCode, err.Error())
+			gw.recordErr(tenant, req, node, statusCode, true, err)
 			return
 		}
 		node.CB.OnFailure()
+		gw.recordErr(tenant, req, node, http.StatusBadGateway, true, err)
 		logger.Get().Error().Msgf("[%s] Stream disconnected(%v), %d chunks sent.", node.Backend.ID, err, n)
 		fmt.Fprintf(w, "event: error\ndata: {\"error\": %q}\n\n", err.Error())
 		flusher.Flush()
 		return
 	}
+	gw.recordErr(tenant, req, nil, http.StatusBadGateway, true, lastErr)
 	writeFinalErr(w, lastErr)
 }

@@ -1,11 +1,12 @@
 package openai
 
 type ChatCompletionRequest struct {
-	Model               string        `json:"model"`
-	Messages            []ChatMessage `json:"messages"`
-	Stream              bool          `json:"stream"`
-	MaxCompletionTokens *int          `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64      `json:"temperature,omitempty"`
+	Model               string         `json:"model"`
+	Messages            []ChatMessage  `json:"messages"`
+	Stream              bool           `json:"stream"`
+	MaxCompletionTokens *int           `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64       `json:"temperature,omitempty"`
+	StreamOptions       *StreamOptions `json:"stream_options,omitempty"`
 }
 
 type ChatMessage struct {
@@ -13,6 +14,9 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
 type ChatCompletionResponse struct {
 	ID      string   `json:"id"`
 	Object  string   `json:"object"`
@@ -45,4 +49,5 @@ type ChatCompletionChunk struct {
 	Model             string        `json:"model"`
 	SystemFingerprint string        `json:"system_fingerprint"`
 	Choices           []ChunkChoice `json:"choices"`
+	Usage             *Usage        `json:"usage"`
 }

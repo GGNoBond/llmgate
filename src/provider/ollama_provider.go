@@ -226,6 +226,11 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 			}
 			if or.Done {
 				chunk.Choices[0].FinishReason = &or.DoneReason
+				chunk.Usage = &openai.Usage{
+					CompletionTokens: utils.Defer(or.EvalCount, 0),
+					PromptTokens:     utils.Defer(or.PromptEvalCount, 0),
+					TotalTokens:      utils.Defer(or.EvalCount, 0) + utils.Defer(or.PromptEvalCount, 0),
+				}
 			}
 			if err := h(chunk); err != nil {
 				return err

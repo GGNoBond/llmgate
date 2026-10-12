@@ -11,6 +11,7 @@ import (
 	"github.com/aoxin/llmgate/src/config"
 	"github.com/aoxin/llmgate/src/middleware"
 	"github.com/aoxin/llmgate/src/utils"
+	"github.com/redis/go-redis/v9"
 )
 
 // Tenant 下游租户
@@ -19,7 +20,7 @@ type Tenant struct {
 	Name          string
 	AllowedModels []string
 	RateLimitRPM  int
-	Balance       int64
+	RateLimitTPM  int
 }
 
 type APIKey struct {
@@ -33,26 +34,28 @@ type Store struct {
 	mu      sync.RWMutex
 	keys    map[string]*APIKey
 	tenants map[string]*Tenant
+	rdb     *redis.Client
 }
 
-func NewStore() *Store {
-	return &Store{keys: make(map[string]*APIKey), tenants: make(map[string]*Tenant)}
+func NewStore(rdb *redis.Client) *Store {
+	return &Store{keys: make(map[string]*APIKey), tenants: make(map[string]*Tenant), rdb: rdb}
 }
 
 // InitStore 暂时从config读取租户表
-func (s *Store) InitStore(tenants []config.TenantConfig) {
+func (s *Store) InitStore(ctx context.Context, tenants []config.TenantConfig) {
 	for _, t := range tenants {
 		s.AddTenant(&Tenant{
 			ID:            t.ID,
 			Name:          t.Name,
 			AllowedModels: t.AllowedModels,
 			RateLimitRPM:  t.RateLimitRPM,
-			Balance:       t.Balance,
+			RateLimitTPM:  t.RateLimitTPM,
 		})
 		s.AddKey(&APIKey{
 			Key:      t.APIKey,
 			TenantID: t.ID,
 		})
+		s.rdb.SetNX(ctx, "bal:"+t.ID, t.Balance, 0)
 	}
 }
 
@@ -81,6 +84,22 @@ func (s *Store) Verify(key string) (*Tenant, error) {
 		return nil, errors.New("tenant not found")
 	}
 	return t, nil
+}
+func (s *Store) GetBalance(ctx context.Context, tenantID string) int64 {
+	val, err := s.rdb.Get(ctx, "bal:"+tenantID).Int64()
+	if errors.Is(err, redis.Nil) {
+		return 0
+	}
+	if err != nil {
+		return 0
+	}
+	return val
+}
+func (s *Store) DeductBalance(ctx context.Context, tenantID string, amount int64) int64 {
+	return s.rdb.DecrBy(ctx, "bal:"+tenantID, amount).Val()
+}
+func (s *Store) SetBalance(ctx context.Context, tenantID string, amount int64) {
+	s.rdb.Set(ctx, "bal:"+tenantID, amount, 0)
 }
 func (t *Tenant) ModelAllowed(model string) bool {
 	if len(t.AllowedModels) == 0 {

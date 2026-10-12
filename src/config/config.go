@@ -12,9 +12,10 @@ import (
 )
 
 type ServerConfig struct {
-	Addr         string        `mapstructure:"addr"`
-	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
-	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	Addr            string        `mapstructure:"addr"`
+	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
+	UsageConfigFile string        `mapstructure:"usage_file"`
 }
 
 type TransportConfig struct {
@@ -52,6 +53,7 @@ type TenantConfig struct {
 	APIKey        string   `mapstructure:"api_key"`
 	AllowedModels []string `mapstructure:"allowed_models"`
 	RateLimitRPM  int      `mapstructure:"rate_limit_rpm"`
+	RateLimitTPM  int      `mapstructure:"rate_limit_tpm"`
 	Balance       int64    `mapstructure:"balance"`
 }
 type LoggerConfig struct {
@@ -64,9 +66,15 @@ type LoggerConfig struct {
 	MaxAge        int    `mapstructure:"max_age"`
 	Compress      bool   `mapstructure:"compress"`
 }
+type RedisConfig struct {
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
 type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
 	Transport TransportConfig  `mapstructure:"transport"`
+	Redis     RedisConfig      `mapstructure:"redis"`
 	Upstreams []UpstreamConfig `mapstructure:"upstreams"`
 	Tenants   []TenantConfig   `mapstructure:"tenants"`
 	Logger    LoggerConfig     `mapstructure:"logger"`
