@@ -96,13 +96,14 @@ func (gw *Gateway) HandleChatCompletion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// 余额检查，RPM、TPM检查
-	if gw.Store.GetBalance(r.Context(), tenant.ID) <= 0 {
-		utils.WriteJSONErr(w, http.StatusPaymentRequired, "Insufficient balance")
-		return
-	}
 	prompt := ratelimit.CountMessages(req.Messages)
 	logger.Get().Debug().Msgf("Received chat completion request: %d", prompt)
 
+	bl, err := gw.Store.GetBalance(r.Context(), tenant.ID)
+	if err == nil && bl < int64(prompt) {
+		utils.WriteJSONErr(w, http.StatusPaymentRequired, "Insufficient balance")
+		return
+	}
 	if gw.Limiter != nil {
 		if tenant.RateLimitRPM > 0 {
 			if ok, _ := gw.Limiter.Allow("rl:"+tenant.ID+":rpm",

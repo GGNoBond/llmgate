@@ -85,15 +85,15 @@ func (s *Store) Verify(key string) (*Tenant, error) {
 	}
 	return t, nil
 }
-func (s *Store) GetBalance(ctx context.Context, tenantID string) int64 {
+func (s *Store) GetBalance(ctx context.Context, tenantID string) (int64, error) {
 	val, err := s.rdb.Get(ctx, "bal:"+tenantID).Int64()
 	if errors.Is(err, redis.Nil) {
-		return 0
+		return 0, nil
 	}
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return val
+	return val, nil
 }
 func (s *Store) DeductBalance(ctx context.Context, tenantID string, amount int64) int64 {
 	return s.rdb.DecrBy(ctx, "bal:"+tenantID, amount).Val()

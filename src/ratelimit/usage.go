@@ -2,11 +2,14 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/aoxin/llmgate/src/logger"
 	"github.com/aoxin/llmgate/src/utils"
 )
 
@@ -25,17 +28,27 @@ type UsageRecord struct {
 }
 
 type Recorder struct {
-	mu sync.Mutex
-	f  *os.File
+	f         *os.File
+	ch        chan UsageRecord
+	done      chan struct{}
+	closeOnce sync.Once
+	dropped   atomic.Int64
+}
+
+func (r *Recorder) Dropped() int64 {
+	return r.dropped.Load()
 }
 
 func NewRecorder(path string) (*Recorder, error) {
 	if path == "" {
+		path = "data/usage.jsonl"
+	}
+	if !filepath.IsAbs(path) {
 		root, err := utils.FindProjectRoot()
 		if err != nil {
 			return nil, err
 		}
-		path = filepath.Join(root, "data", "usage.json")
+		path = filepath.Join(root, "data", "usage.jsonl")
 	}
 	if dir := filepath.Dir(path); dir != "" {
 		_ = os.MkdirAll(dir, 0755)
@@ -44,26 +57,51 @@ func NewRecorder(path string) (*Recorder, error) {
 	if err != nil {
 		return nil, err
 	}
+	r := &Recorder{
+		f:    f,
+		ch:   make(chan UsageRecord, 4096),
+		done: make(chan struct{}),
+	}
+	go r.run()
 	tokenizerInit()
-	return &Recorder{f: f}, nil
+	return r, nil
+}
+
+func (r *Recorder) run() {
+	for u := range r.ch {
+		body, err := json.Marshal(u)
+		if err != nil {
+			continue
+		}
+		_, _ = r.f.Write(append(body, '\n'))
+	}
+	_ = r.f.Close()
+	close(r.done)
 }
 
 func (r *Recorder) Record(u UsageRecord) {
-	if r == nil || r.f == nil {
+	if r == nil {
 		return
 	}
-	b, err := json.Marshal(u)
-	if err != nil {
-		return
+	select {
+	case r.ch <- u:
+	default:
+		r.dropped.Add(1)
 	}
-	b = append(b, '\n')
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	_, _ = r.f.Write(b)
 }
 
-func (r *Recorder) Close() {
-	if r != nil && r.f != nil {
-		_ = r.f.Close()
+func (r *Recorder) Close() error {
+	var err error
+	r.closeOnce.Do(func() {
+		close(r.ch)
+		select {
+		case <-r.done:
+		case <-time.After(3 * time.Second):
+			err = errors.New("recorder: flush timed out on shutdown")
+		}
+	})
+	if n := r.dropped.Load(); n > 0 {
+		logger.Get().Info().Msgf("Dropped %d usage records", n)
 	}
+	return err
 }

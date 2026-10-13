@@ -2,7 +2,7 @@ server:
   addr: ":8080"
   read_timeout: 30s
 #  write_timeout: 120s
-  usage_file: "data/usage.json"
+  usage_file: "data/usage.jsonl"
 
 transport:
   max_idle_conns: 200
