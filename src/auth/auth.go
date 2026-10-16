@@ -14,6 +14,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type (
+	CtxAuthKey struct{}
+)
+
 // Tenant 下游租户
 type Tenant struct {
 	ID            string
@@ -122,7 +126,7 @@ func Auth(store *Store) middleware.MiddleWare {
 				utils.WriteJSONErr(w, http.StatusUnauthorized, err.Error())
 				return
 			}
-			ctx := context.WithValue(r.Context(), middleware.CtxAuthKey{}, tenant)
+			ctx := context.WithValue(r.Context(), CtxAuthKey{}, tenant)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

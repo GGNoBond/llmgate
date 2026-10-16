@@ -71,10 +71,16 @@ type RedisConfig struct {
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
 }
+
+type CacheConfig struct {
+	Enable bool          `mapstructure:"enable"`
+	TTL    time.Duration `mapstructure:"ttl"`
+}
 type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
 	Transport TransportConfig  `mapstructure:"transport"`
 	Redis     RedisConfig      `mapstructure:"redis"`
+	Cache     CacheConfig      `mapstructure:"cache"`
 	Upstreams []UpstreamConfig `mapstructure:"upstreams"`
 	Tenants   []TenantConfig   `mapstructure:"tenants"`
 	Logger    LoggerConfig     `mapstructure:"logger"`

@@ -3,20 +3,24 @@ package main
 import (
 	"context"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/aoxin/llmgate/src/auth"
+	"github.com/aoxin/llmgate/src/cache"
 	"github.com/aoxin/llmgate/src/config"
 	"github.com/aoxin/llmgate/src/gateway"
 	"github.com/aoxin/llmgate/src/health"
 	"github.com/aoxin/llmgate/src/lb"
 	"github.com/aoxin/llmgate/src/logger"
+	"github.com/aoxin/llmgate/src/metrics"
 	"github.com/aoxin/llmgate/src/middleware"
 	"github.com/aoxin/llmgate/src/ratelimit"
 	"github.com/aoxin/llmgate/src/router"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -25,7 +29,8 @@ func main() {
 	logger.Init(&cfg.Logger)
 	lgr := logger.Get()
 	tr := gateway.NewTransport(&cfg.Transport)
-	lb := &lb.LeastConn{}
+	// lb := &lb.LeastConn{}
+	lb := &lb.WeightedRR{}
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Addr,
 		Password: cfg.Redis.Password,
@@ -41,16 +46,26 @@ func main() {
 	if err != nil {
 		lgr.Error().Msgf("init usage recorder failed: %v", err)
 	}
+	var cc *cache.Cache
+	if cfg.Cache.Enable {
+		cc = cache.New(rdb, cfg.Cache.TTL)
+		lgr.Info().Msgf("exact cache enabled, ttl=%v", cfg.Cache.TTL)
+	}
 	gw := &gateway.Gateway{
 		Router:   r,
 		Limiter:  ratelimit.NewRedisLimiter(rdb),
 		Recorder: recorder,
 		Store:    st,
+		Cache:    cc,
 	}
 
+	metrics.Register()
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/v1/chat/completions", middleware.Chain(
 		http.HandlerFunc(gw.HandleChatCompletion),
+		middleware.TraceID(),
+		middleware.Metrics(),
 		middleware.Recovery(),
 		auth.Auth(st),
 	))

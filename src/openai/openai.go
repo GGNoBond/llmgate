@@ -51,3 +51,9 @@ type ChatCompletionChunk struct {
 	Choices           []ChunkChoice `json:"choices"`
 	Usage             *Usage        `json:"usage"`
 }
+
+func (r *ChatCompletionRequest) WithUsageStream() *ChatCompletionRequest {
+	c := *r
+	c.StreamOptions = &StreamOptions{IncludeUsage: true}
+	return &c
+}

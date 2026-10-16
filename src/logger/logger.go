@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -14,6 +15,25 @@ var (
 	once   sync.Once
 	logger zerolog.Logger
 )
+
+// traceKey 是 ctx 里存 traceID 的私有 key（放 logger 包避免 logger→middleware 循环依赖）。
+type traceKey struct{}
+
+// WithTraceID 把 traceID 绑定进 ctx。
+func WithTraceID(ctx context.Context, tid string) context.Context {
+	return context.WithValue(ctx, traceKey{}, tid)
+}
+
+// Ctx 返回带 trace_id 字段的 logger；ctx 里没有 traceID 时退回全局 logger。
+func Ctx(ctx context.Context) *zerolog.Logger {
+	if ctx != nil {
+		if tid, ok := ctx.Value(traceKey{}).(string); ok && tid != "" {
+			l := logger.With().Str("trace_id", tid).Logger()
+			return &l
+		}
+	}
+	return &logger
+}
 
 func Get() *zerolog.Logger {
 	return &logger

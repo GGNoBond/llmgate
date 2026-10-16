@@ -147,20 +147,26 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 		},
 	}
 	body, _ := json.Marshal(or)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/chat", bytes.NewReader(body))
+	streamCtx, cancel := context.WithCancel(ctx)
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, p.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.streamClient.Do(httpReq)
 	if err != nil {
+		cancel()
 		if ctx.Err() != nil {
 			return err
 		}
 		return &UpstreamError{Err: err, StatusCode: 0}
 	}
-	defer resp.Body.Close()
+	defer func() {
+		cancel()
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &UpstreamError{
@@ -181,7 +187,7 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 		for scanner.Scan() {
 			select {
 			case lines <- bytes.TrimSpace(scanner.Bytes()):
-			case <-ctx.Done():
+			case <-streamCtx.Done():
 				errCh <- ctx.Err()
 				return
 			}

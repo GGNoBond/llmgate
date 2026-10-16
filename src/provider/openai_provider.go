@@ -116,8 +116,8 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *openai.ChatCompletionReq
 }
 
 func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatCompletionRequest, h StreamHandler) error {
-	req.StreamOptions.IncludeUsage = true
-	body, _ := json.Marshal(req)
+	body, _ := json.Marshal(req.WithUsageStream())
+	streamCtx, cancel := context.WithCancel(ctx)
 
 	maxKeyTries := p.pool.Size()
 	if maxKeyTries <= 0 {
@@ -128,6 +128,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 	for range maxKeyTries {
 		apiKey, ok := p.pool.Next()
 		if !ok {
+			cancel()
 			return &UpstreamError{
 				Err:        errors.New("all api keys rate limited"),
 				StatusCode: http.StatusTooManyRequests,
@@ -135,6 +136,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 		if err != nil {
+			cancel()
 			return err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -143,6 +145,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 
 		r, err := p.streamClient.Do(httpReq)
 		if err != nil {
+			cancel()
 			if ctx.Err() != nil {
 				return err
 			}
@@ -161,6 +164,8 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 			continue
 		}
 		if r.StatusCode < 200 || r.StatusCode >= 300 {
+			r.Body.Close()
+			cancel()
 			return &UpstreamError{
 				Err:        fmt.Errorf("upstream error: %s", r.Status),
 				StatusCode: r.StatusCode,
@@ -170,9 +175,13 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 		break
 	}
 	if resp == nil {
+		cancel()
 		return lastErr
 	}
-	defer resp.Body.Close()
+	defer func() {
+		cancel()
+		resp.Body.Close()
+	}()
 	// 用streamChunkTimeout 来控制每个chunk的超时
 	// 起单独goroutine负责resp.Body上的阻塞读
 	// lines传递读到的行，errCh传递scanner错误码
@@ -187,7 +196,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req *openai.ChatComplet
 		for scanner.Scan() {
 			select {
 			case lines <- scanner.Text():
-			case <-ctx.Done():
+			case <-streamCtx.Done():
 				errCh <- ctx.Err()
 				return
 			}

@@ -31,7 +31,7 @@ upstreams:
 
   - name: ollama-native-b
     type: openai
-    base_url: http://localhost:11435/v1
+    base_url: http://localhost:11434/v1
     models: ["qwen2.5:0.5b", "qwen2.5:1.5b", "deepseek-coder:1.3b"]
     per_response_timeout: 5m
     stream_chunk_timeout: 10s
@@ -95,3 +95,7 @@ redis:
   addr: "localhost:6379"
   password: ""
   db: 0
+
+cache:
+  enable: true
+  ttl: 5m
