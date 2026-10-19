@@ -1,0 +1,113 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: llmgate-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: ["llmgate-net"]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: llmgate-ollama
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: ["llmgate-net"]
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: all
+#              capabilities: [gpu]
+
+#  ollama-init:
+#    image: ollama/ollama:latest
+#    container_name: llmgate-ollama-init
+#    depends_on: [ollama]
+#    networks: ["llmgate-net"]
+#    restart: "no"
+#    entrypoint: ["/bin/sh", "-c"]
+#    command:
+#      - |
+#        echo "[init] waiting for ollama server..."
+#        until OLLAMA_HOST=http://ollama:11434 ollama ps >/dev/null 2>&1; do sleep 2; done
+#        echo "[init] pulling qwen2.5:1.5b(1GB,请耐心等待...)"
+#        OLLAMA_HOST=http://ollama:11434 ollama pull qwen2.5:1.5b
+#        echo "[init] model ready"
+
+  llmgate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llmgate:latest
+    container_name: llmgate
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      LLMGATE_CONFIG: config/config.docker.yaml
+      TZ: Asia/Shanghai   # 容器默认 UTC，与宿主 CST 差 8h；统一时区使日志墙钟=本地时间
+    ports:
+      - "8080:8080"
+    volumes:
+      - usage-data:/app/data
+    networks: ["llmgate-net"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: llmgate-prometheus
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on: [llmgate]
+    networks: ["llmgate-net"]
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: llmgate-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      TZ: Asia/Shanghai
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    networks: ["llmgate-net"]
+
+networks:
+  llmgate-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  ollama-data:
+  prometheus-data:
+  grafana-data:
+  usage-data:

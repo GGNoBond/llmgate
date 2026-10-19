@@ -44,7 +44,7 @@ func Init(config *config.LoggerConfig) {
 		if config.ConsoleEnable {
 			consoleWriter := zerolog.ConsoleWriter{
 				Out:        os.Stdout,
-				TimeFormat: zerolog.TimeFormatUnix,
+				TimeFormat: "15:04:05 PM",
 			}
 			writers = append(writers, consoleWriter)
 		}

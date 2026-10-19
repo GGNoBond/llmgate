@@ -25,7 +25,11 @@ import (
 )
 
 func main() {
-	cfg := config.GetConfig("config/config.yaml")
+	configPath := os.Getenv("LLMGATE_CONFIG")
+	if configPath == "" {
+		configPath = "config/config.yaml"
+	}
+	cfg := config.GetConfig(configPath)
 	logger.Init(&cfg.Logger)
 	lgr := logger.Get()
 	tr := gateway.NewTransport(&cfg.Transport)

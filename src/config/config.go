@@ -3,12 +3,12 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/spf13/viper"
-
 	"github.com/aoxin/llmgate/src/utils"
+	"github.com/spf13/viper"
 )
 
 type ServerConfig struct {
@@ -94,13 +94,18 @@ var (
 // GetConfig - Get config instance
 func GetConfig(path string) *Config {
 	once.Do(func() {
-		root, err := utils.FindProjectRoot()
-		if err != nil {
-			panic(fmt.Sprintf("Failed to find project root: %v", err))
+		if !filepath.IsAbs(path) {
+			root, err := utils.FindProjectRoot()
+			if err != nil {
+				panic(fmt.Sprintf("Failed to find project root: %v", err))
+			}
+			path = filepath.Join(root, path)
 		}
-		path = filepath.Join(root, path)
 		viper.SetConfigFile(path)
 		viper.SetConfigType("yaml")
+		viper.SetEnvPrefix("LLMGATE")
+		viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+		viper.AutomaticEnv()
 		if err := viper.ReadInConfig(); err != nil {
 			panic(fmt.Sprintf("Failed to read config file[%s]: %v", path, err))
 		}

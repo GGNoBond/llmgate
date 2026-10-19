@@ -1,0 +1,11 @@
+.git/
+.idea/
+build/
+log/
+data/
+mnt/
+learningtest/
+resource/
+scripts/
+*.md
+config/config_learningtest.yaml

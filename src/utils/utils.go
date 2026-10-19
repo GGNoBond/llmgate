@@ -10,6 +10,9 @@ import (
 // FindProjectRoot /*--- FindProjectRoot ---*/
 // FindProjectRoot find the root directory of the project.
 func FindProjectRoot() (string, error) {
+	if root := os.Getenv("LLMGATE_ROOT"); root != "" {
+		return root, nil
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
