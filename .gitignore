@@ -3,3 +3,9 @@ build/
 log/
 mnt/
 data/
+doc/
+learningtest/
+resource/
+scripts/
+config/config.yaml
+config/config_learningtest.yaml
