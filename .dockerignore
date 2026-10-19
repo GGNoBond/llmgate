@@ -7,5 +7,6 @@ mnt/
 learningtest/
 resource/
 scripts/
+doc/
 *.md
 config/config_learningtest.yaml

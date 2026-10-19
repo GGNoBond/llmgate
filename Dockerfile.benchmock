@@ -1,0 +1,15 @@
+# benchmock 镜像：压测用的假 OpenAI 上游，纯 Go 标准库，静态编译。
+FROM golang:1.27-alpine AS builder
+WORKDIR /build
+COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
+COPY cmd/ cmd/
+# benchmock 只依赖标准库，无需 go mod download
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/bin/benchmock ./cmd/benchmock
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+WORKDIR /app
+COPY --from=builder /build/bin/benchmock /app/benchmock
+EXPOSE 11499
+ENTRYPOINT ["/app/benchmock"]

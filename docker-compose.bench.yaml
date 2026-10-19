@@ -1,0 +1,44 @@
+# 压测叠加层。用法：
+#   docker compose -f docker-compose.yaml -f docker-compose.bench.yaml up --build
+# 用 LLMGATE_CONFIG 覆盖成 bench 配置；mock 服务全部走容器网络（服务名互联，无需 host.docker.internal）。
+services:
+  llmgate:
+    environment:
+      LLMGATE_CONFIG: config/config.bench.yaml
+    volumes:
+      - usage-data:/app/data
+      - ./config:/app/config        # 绑定宿主 config 目录，改配置无需重新 build 镜像
+    depends_on:
+      - benchmock-a
+      - benchmock-b
+      - benchmock-c
+
+  benchmock-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.benchmock
+    image: benchmock:latest
+    container_name: benchmock-a
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    command: ["-addr", ":11499", "-chunks", "20", "-first-delay", "3ms", "-chunk-interval", "2ms"]
+    networks: ["llmgate-net"]
+
+  benchmock-b:
+    image: benchmock:latest          # 复用 a 构建出的镜像
+    container_name: benchmock-b
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    command: ["-addr", ":11499", "-chunks", "20", "-first-delay", "3ms", "-chunk-interval", "2ms"]
+    networks: ["llmgate-net"]
+
+  benchmock-c:
+    image: benchmock:latest
+    container_name: benchmock-c
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    command: ["-addr", ":11499", "-chunks", "20", "-first-delay", "3ms", "-chunk-interval", "2ms", "-error-rate", "0.5"]
+    networks: ["llmgate-net"]

@@ -46,9 +46,21 @@ func main() {
 	st := auth.NewStore(rdb)
 	st.InitStore(context.Background(), cfg.Tenants)
 	r, nodeList := router.BuildRouter(cfg.Upstreams, tr, lb)
-	recorder, err := ratelimit.NewRecorder(cfg.Server.UsageConfigFile)
-	if err != nil {
-		lgr.Error().Msgf("init usage recorder failed: %v", err)
+	var recorder *ratelimit.Recorder
+	if cfg.Server.UsageEnable == nil || *cfg.Server.UsageEnable {
+		rec, err := ratelimit.NewRecorderWithOptions(ratelimit.RecorderOptions{
+			Path:       cfg.Server.UsageConfigFile,
+			MaxSize:    cfg.Server.UsageMaxSize,
+			MaxBackups: cfg.Server.UsageMaxBackups,
+			MaxAge:     cfg.Server.UsageMaxAge,
+			Compress:   cfg.Server.UsageCompress,
+		})
+		if err != nil {
+			lgr.Error().Msgf("init usage recorder failed: %v", err)
+		}
+		recorder = rec
+	} else {
+		lgr.Info().Msg("usage recording disabled")
 	}
 	var cc *cache.Cache
 	if cfg.Cache.Enable {

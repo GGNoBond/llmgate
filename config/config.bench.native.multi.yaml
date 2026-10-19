@@ -1,0 +1,88 @@
+# 压测专用【原生 go run·多上游】配置：3 个 benchmock 分摊上游压力
+# 用途：
+#   1) 验证瓶颈——若 QPS 比单 mock（config.bench.native.yaml）明显上升，说明之前卡在单 mock；
+#      基本不变则坐实瓶颈在网关自身。
+#   2) 场景 F failover——把其中一个 mock 用 -error-rate 0.5 启动，测故障转移/熔断。
+# 启动：LLMGATE_CONFIG=config/config.bench.native.multi.yaml go run ./src
+server:
+  addr: ":8080"
+  read_timeout: 30s
+  usage_file: "data/usage.jsonl"   # 相对路径会被 Recorder 解析到项目根 data/usage.jsonl
+  # 压测防膨胀：usage.jsonl 按大小自动轮转并压缩，最多留 5 份 × 50MB
+  usage_max_size: 50      # 单文件 MB，超过则切割
+  usage_max_backups: 5    # 最多保留旧文件数
+  usage_max_age: 1        # 旧文件保留天数
+  usage_compress: true    # 压缩旧文件
+  usage_enable: false   # 只看 QPS/延迟、不需要用量账本时，关闭落库彻底消除写入与磁盘开销
+
+transport:
+  max_idle_conns: 2000
+  max_idle_conns_per_host: 500
+  idle_conn_timeout: 90s
+  dial_context_timeout: 3s
+  tls_handshake_timeout: 5s
+  response_header_timeout: 30s
+
+# 原生多上游：本地起 3 个 benchmock 进程，分别监听 :11499 / :11500 / :11501
+upstreams:
+  - name: mock-a
+    type: openai
+    base_url: http://localhost:11499/v1
+    models: ["bench-gpt"]
+    per_response_timeout: 60s
+    stream_chunk_timeout: 10s
+    weight: 1
+    key_pool: ["sk-mock"]
+    health:
+      { path: /models, interval: 3s, timeout: 2s, fail_threshold: 2, ok_threshold: 1 }
+
+  - name: mock-b
+    type: openai
+    base_url: http://localhost:11500/v1
+    models: ["bench-gpt"]
+    per_response_timeout: 60s
+    stream_chunk_timeout: 10s
+    weight: 1
+    key_pool: ["sk-mock"]
+    health:
+      { path: /models, interval: 3s, timeout: 2s, fail_threshold: 2, ok_threshold: 1 }
+
+  # 场景 F：把此 mock 用 -error-rate 0.5 启动，演示 failover / 熔断 / 健康剔除
+  - name: mock-c
+    type: openai
+    base_url: http://localhost:11501/v1
+    models: ["bench-gpt"]
+    per_response_timeout: 60s
+    stream_chunk_timeout: 10s
+    weight: 1
+    key_pool: ["sk-mock"]
+    health:
+      { path: /models, interval: 3s, timeout: 2s, fail_threshold: 2, ok_threshold: 1 }
+
+tenants:
+  - id: bench-01
+    name: bench-load-tester
+    api_key: sk-llmgate-bench
+    allowed_models: [bench-gpt]
+    # 压测时把限流放到极高，避免限流器成为瓶颈；单独测限流时再调低
+    rate_limit_rpm: 1000000
+    rate_limit_tpm: 100000000
+    balance: 100000000000
+
+logger:
+  level: "info"          # 高并发下 trace 会刷屏，压测用 info
+  file_enable: false
+  console_enable: true
+  filename: "./log/llmgate.log"
+  max_size: 100
+  max_backups: 10
+  max_age: 7
+  compress: true
+
+redis:
+  addr: "localhost:6379" # 原生走宿主 loopback，Redis 容器已发布 6379:6379
+  password: ""
+  db: 0
+
+cache:
+  enable: false          # 测“网关转发”开销时关闭；测缓存命中率时改 true

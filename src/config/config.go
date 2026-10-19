@@ -16,6 +16,11 @@ type ServerConfig struct {
 	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	UsageConfigFile string        `mapstructure:"usage_file"`
+	UsageEnable     *bool         `mapstructure:"usage_enable"`      // nil => 默认开启；压测不需要账本时可关闭
+	UsageMaxSize    int           `mapstructure:"usage_max_size"`    // 单文件最大 MB，超过轮转
+	UsageMaxBackups int           `mapstructure:"usage_max_backups"` // 最多保留旧文件数
+	UsageMaxAge     int           `mapstructure:"usage_max_age"`     // 旧文件最多保留天数
+	UsageCompress   bool          `mapstructure:"usage_compress"`    // 是否压缩旧文件
 }
 
 type TransportConfig struct {
@@ -120,6 +125,10 @@ func GetConfig(path string) *Config {
 
 // 部分配置的合法校验及默认值
 func (c *Config) applyDefaults() {
+	if c.Server.UsageEnable == nil {
+		enabled := true
+		c.Server.UsageEnable = &enabled
+	}
 	for i := range c.Upstreams {
 		u := &c.Upstreams[i]
 		if u.PerResponseTimeout <= 0 {
